@@ -54,7 +54,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Configuramos el puerto con el .env
 const port = process.env.PORT || 3000
-app.listen(PORT, () => console.log("Server running on port " + PORT));
+
 
 dotenv.config();
 
