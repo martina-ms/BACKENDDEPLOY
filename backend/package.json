@@ -21,7 +21,7 @@
     "keycloak-connect": "^26.1.1",
     "mongoose": "^8.19.0",
     "zod": "^3.25.76",
-    "multer": "^2.0.2",
+    "multer": "^2.0.2"
 
 
   },
