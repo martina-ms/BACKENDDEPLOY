@@ -7,7 +7,7 @@ const memoryStore = new session.MemoryStore();
 const keycloakConfig = {
   clientId: 'backend-app',
   bearerOnly: true,
-  serverUrl: 'http://localhost:8080',
+  serverUrl: 'https://renna-unbrought-peskily.ngrok-free.dev ',
   realm: 'tp-tienda-sol',
   credentials: {
     secret: process.env.KEYCLOAK_SECRET   //AGREGUEN A SU .ENV DEL FRONT SU KEYCLOAK_SECRET ASI NO LA HARDODEAMOS SIEMPRE
