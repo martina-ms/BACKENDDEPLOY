@@ -29,7 +29,7 @@ export class Server {
     this.#app.use("/uploads", express.static(path.join(UPLOADS_DIR)));
     this.#app.use(provisionUsuario);
   const corsOptions = {
-  origin: "http://localhost:3001", // Origen de tu frontend
+  origin: "*", // Origen de tu frontend
   methods: "GET,POST,PUT,DELETE,PATCH,OPTIONS", // Métodos permitidos
   allowedHeaders: "Content-Type, Authorization" // Headers permitidos
 };
