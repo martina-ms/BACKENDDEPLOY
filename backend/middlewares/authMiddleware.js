@@ -1,7 +1,7 @@
 import { UsuarioRepository } from '../modulos/repos/usuarioRepo.js';
 import { Usuario } from '../modulos/dominio/usuario.js';
 import { TipoDeUsuario } from '../modulos/dominio/tipoDeUsuario.js';
-import { UsuarioModel } from '../schemas/UsuarioSchema.js'
+import { UsuarioModel } from '../schemas/usuarioSchema.js'
 
 const usuarioRepo = new UsuarioRepository();
 
