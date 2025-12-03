@@ -18,7 +18,8 @@ import { UsuarioRepository } from "./modulos/repos/usuarioRepo.js"
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
-
+import debugAuth from "./rutas/debugAuth.js"
+import simpleLogger from "./middlewares/simpleLogger.js"
 //import { swaggerDocs } from "./config/swagger.js";
 
 import swaggerUi from 'swagger-ui-express';
@@ -49,7 +50,8 @@ const __dirname = path.dirname(__filename);
 // Servir archivos estáticos desde /uploads
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-
+//app.use(debugAuth)
+app.use(simpleLogger)
 
 
 // Configuramos el puerto con el .env

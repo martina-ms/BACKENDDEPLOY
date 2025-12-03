@@ -10,6 +10,11 @@ const PedidoSchema = new mongoose.Schema({
         required: true,
         index: true 
     },
+  compradorExternal: {
+      type: String,
+      index: true,
+      sparse: true,
+    },
   items: { type: [ItemPedidoSchema], required: true },
   total: { type: Number, required: true },
   moneda: { type: String, enum: ["Peso_arg", "Dolar_usa", "Real"], required: true },
