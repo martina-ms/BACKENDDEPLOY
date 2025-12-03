@@ -4,6 +4,7 @@ import pedidoRoutes from "./pedidoRoutes.js"
 import notificacionRoutes from "./notificacionRoutes.js"
 import usuarioRoutes from "./usuarioRoutes.js"
 import productoRoutes from "./productoRoutes.js"
+import debugAuth from "./debugAuth.js"
 
 // Acá hay que agregar todas las rutas de nuestra app
 const routes = [
@@ -12,7 +13,8 @@ const routes = [
   pedidoRoutes,
   notificacionRoutes,
   productoRoutes,
-  usuarioRoutes
+  usuarioRoutes,
+  debugAuth
 ]
 
 export default routes

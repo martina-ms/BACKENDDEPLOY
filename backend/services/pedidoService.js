@@ -16,7 +16,7 @@ export class PedidoService {
         this.cotizacionREAL = 260;
     }
 
-    convertirMoneda(precio, monedaOrigen, monedaDestino) { // es medio feo pero no se me ocurrio otra cosa
+    convertirMoneda(precio, monedaOrigen, monedaDestino) {
         if (monedaOrigen === monedaDestino) return precio;
 
         let precioConvertido;
@@ -42,43 +42,39 @@ export class PedidoService {
     }
 
     async crear(data) {
-      const { comprador: keycloakId, items, moneda, direccionEntrega } = data;
+        const { comprador: keycloakId, items, moneda, direccionEntrega } = data;
 
-      
         const itemsDeDominio = await Promise.all(items.map(async item => {
-
             const productoId = item.producto;
-
-            if (!productoId) {
-                throw new Error("El item de pedido no contiene un ID de producto válido.");
-            }
+            if (!productoId) throw new Error("El item de pedido no contiene un ID de producto válido.");
 
             const productoCompleto = await this.productoRepository.buscarPorId(productoId);
+            if (!productoCompleto) throw new Error(`Producto con ID ${productoId} no encontrado.`);
 
-            if (!productoCompleto) {
-                throw new Error(`Producto con ID ${productoId} no encontrado.`);
-            }
-
-            // Convertir el precio del producto a la moneda del pedido
             const precioConvertido = this.convertirMoneda(
                 productoCompleto.precio,
                 productoCompleto.moneda,
                 moneda
             );
 
-            // Crear la instancia de ItemPedido con el objeto Producto cargado
             return new ItemPedido(
                 productoCompleto,
                 item.cantidad,
-                precioConvertido // Le pongo el precio actual del producto en la moneda del pedido
+                precioConvertido
             );
         }));
 
         const totalCalculado = itemsDeDominio.reduce((acc, item) => acc + (item.precioUnitario * item.cantidad), 0);
 
-        // 2. Crear el Pedido con los items completos
+        const nuevoPedido = new Pedido(keycloakId, itemsDeDominio, totalCalculado, moneda, direccionEntrega, EstadoPedido.PENDIENTE, new Date(), []);
+        if (data.compradorExternal) {
+          try {
+            nuevoPedido.compradorExternal = String(data.compradorExternal);
+          } catch (e) {
+            console.warn("[PedidoService] crear - no se pudo asignar compradorExternal:", e);
+          }
+        }
 
-       const nuevoPedido = new Pedido(keycloakId, itemsDeDominio, totalCalculado, moneda, direccionEntrega, EstadoPedido.PENDIENTE, new Date(), []);
         nuevoPedido.validarStock();
 
         for (const item of nuevoPedido.items) {
@@ -89,40 +85,51 @@ export class PedidoService {
         }
 
         const pedidoGuardado = await this.pedidoRepository.crear(nuevoPedido);
-      try {
-    const factoryNotificacion = new FactoryNotificacion();
-    const notificacionCreada = factoryNotificacion.crearSegunPedido(pedidoGuardado);
 
-    if (!notificacionCreada.usuarioKeycloakId && pedidoGuardado.comprador) {
-      notificacionCreada.usuarioKeycloakId = pedidoGuardado.comprador;
-    }
+        try {
+            const factoryNotificacion = new FactoryNotificacion();
+            const notificacionCreada = factoryNotificacion.crearSegunPedido(pedidoGuardado);
 
-    // si el factory puso usuarioDestino como string, lo eliminamos (repo.create lo resolverá por usuarioKeycloakId)
-    if (notificacionCreada.usuarioDestino && typeof notificacionCreada.usuarioDestino === 'string') {
-      // antes de borrar, logueo para poder debuggear
-      delete notificacionCreada.usuarioDestino;
-    }
+            // Preferir el external id para las notificaciones; fallback a comprador DB id.
+            // Normalizamos a string siempre.
+            const usuarioParaNotificacion = pedidoGuardado.compradorExternal
+                ? String(pedidoGuardado.compradorExternal)
+                : (pedidoGuardado.comprador ? String(pedidoGuardado.comprador) : null);
 
-    if (!notificacionCreada.mensaje && !notificacionCreada.title) {
-      notificacionCreada.mensaje = `Pedido ${String(pedidoGuardado._id).slice(0,8)} creado`;
-    }
+            if (!notificacionCreada.usuarioKeycloakId) {
+              notificacionCreada.usuarioKeycloakId = usuarioParaNotificacion;
+            } else {
+              // asegurarnos que sea string
+              notificacionCreada.usuarioKeycloakId = String(notificacionCreada.usuarioKeycloakId);
+            }
 
-    // Intentamos guardar la notificación.  usuarioKeycloakId -> usuarioDestino
-    const savedNotif = await this.notificacionRepository.create(notificacionCreada);
-  } catch (err) {
-    
-    console.error("[PedidoService] crear - error al crear notificacion para pedido", {
-      pedidoId: pedidoGuardado._id,
-      comprador: pedidoGuardado.comprador,
-      errorMessage: err.message,
-      stack: err.stack
-    });
+            // Si el factory dejó usuarioDestino como string, lo borramos para que el repo lo resuelva desde usuarioKeycloakId
+            if (notificacionCreada.usuarioDestino && typeof notificacionCreada.usuarioDestino === 'string') {
+              delete notificacionCreada.usuarioDestino;
+            }
 
-    }
+            if (!notificacionCreada.mensaje && !notificacionCreada.title) {
+              notificacionCreada.mensaje = `Pedido ${String(pedidoGuardado._id).slice(0,8)} creado`;
+            }
+
+            // Log para debug antes de crear la notificación
+            console.log("[PedidoService] crear - notificacion payload:", notificacionCreada);
+
+            const savedNotif = await this.notificacionRepository.create(notificacionCreada);
+        } catch (err) {
+            console.error("[PedidoService] crear - error al crear notificacion para pedido", {
+                pedidoId: pedidoGuardado._id,
+                comprador: pedidoGuardado.comprador,
+                errorMessage: err.message,
+                stack: err.stack
+            });
+        }
+
         return pedidoGuardado;
     }
 
     async cancelar(idPedido, idusuario, motivo) {
+        // ... (sin cambios respecto a tu implementación actual)
         const pedido = await this.pedidoRepository.buscarPorId(idPedido);
 
         if (!pedido) {
@@ -133,40 +140,40 @@ export class PedidoService {
             throw new ErrorDeEstado(`No se puede cancelar un pedido en estado ${pedido.estado}`);
         }
 
-        //actualizo estado pedido
         pedido.actualizarEstado(EstadoPedido.CANCELADO, idusuario, motivo);
 
-        // devuelvo el stock de los productos
         for (const item of pedido.items) {
             const producto = await this.productoRepository.buscarPorId(item.producto.id);
             if (producto) {
                 producto.aumentarStock(item.cantidad);
                 producto.modificarCantVendida(-item.cantidad);
-                await this.productoRepository.modificarStock(item.producto.id, producto);//
+                await this.productoRepository.modificarStock(item.producto.id, producto);
                 await this.productoRepository.modificarCantVendida(item.producto.id, producto);
             }
         }
 
-        // guardo el pedido actualizado en el repo
-        await this.pedidoRepository.actualizarElEstado(idPedido, pedido); //
+        await this.pedidoRepository.actualizarElEstado(idPedido, pedido);
 
-        //mando la notificacion por cancelacion
         const factoryNotificacion = new FactoryNotificacion();
         const notificacionCreada = factoryNotificacion.crearSegunPedido(pedido);
+
+        if (!notificacionCreada.usuarioKeycloakId) {
+          notificacionCreada.usuarioKeycloakId = pedido.compradorExternal || pedido.comprador;
+        }
+        notificacionCreada.usuarioKeycloakId = notificacionCreada.usuarioKeycloakId ? String(notificacionCreada.usuarioKeycloakId) : null;
 
         await this.notificacionRepository.create(notificacionCreada);
 
         return pedido;
     }
 
-
     async historialPorUsuario(id) {
         const pedido = await this.pedidoRepository.buscarPorUsuarioId(id);
         return pedido;
     }
 
-
     async enviar(idPedido, idUsuario, motivo) {
+        // ... tal como lo tenías, con la misma normalización de notificaciones si querés
         const pedido = await this.pedidoRepository.buscarPorId(idPedido);
 
         if (!pedido) {
@@ -177,15 +184,16 @@ export class PedidoService {
             throw new ErrorDeEstado(`No se puede enviar un pedido en estado ${pedido.estado}`);
         }
 
-        //actualizo estado pedido
         pedido.actualizarEstado(EstadoPedido.ENVIADO, idUsuario, motivo);
-
-        // guardo el pedido actualizado en el repo
         await this.pedidoRepository.actualizarElEstado(idPedido, pedido);
 
-        //mando la notificacion por cancelacion
         const factoryNotificacion = new FactoryNotificacion();
         const notificacionCreada = factoryNotificacion.crearSegunPedido(pedido);
+
+        if (!notificacionCreada.usuarioKeycloakId) {
+          notificacionCreada.usuarioKeycloakId = pedido.compradorExternal || pedido.comprador;
+        }
+        notificacionCreada.usuarioKeycloakId = notificacionCreada.usuarioKeycloakId ? String(notificacionCreada.usuarioKeycloakId) : null;
 
         await this.notificacionRepository.create(notificacionCreada);
 
@@ -204,8 +212,6 @@ export class PedidoService {
         pedido.actualizarEstado(EstadoPedido.CONFIRMADO, idUsuario, motivo);
         await this.pedidoRepository.actualizarElEstado(idPedido, pedido);
 
-        //la consigna no pide mandar notificacion
-        
         return pedido;
     }
 

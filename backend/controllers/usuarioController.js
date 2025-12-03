@@ -34,7 +34,7 @@ export class UsuarioController {
 
 }
     
-const tipoUsuarioSchemaZod = z.enum(["Comprador", "Vendedor", "Admin"], {
+const tipoUsuarioSchemaZod = z.enum(["comprador", "vendedor", "admin"], {
     errorMap: () => ({ message: "Usuario inválido." })
 });
 

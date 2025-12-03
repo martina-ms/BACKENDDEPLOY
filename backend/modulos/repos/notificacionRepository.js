@@ -3,47 +3,72 @@ import { NotificacionModel } from "../../schemas/notificacionSchema.js";
 import { UsuarioModel } from "../../schemas/usuarioSchema.js";
 const { Types } = mongoose;
 
-
 export class NotificacionRepository {
   constructor() {
     this.model = NotificacionModel;
   }
 
-   _isObjectId(value) {
+  _isObjectId(value) {
     return Types.ObjectId.isValid(value) && String(new Types.ObjectId(value)) === String(value);
   }
 
-  async _buildUsuarioFilter(usuarioIdentifier) {
-    if (!usuarioIdentifier) return null;
-    if (this._isObjectId(usuarioIdentifier)) {
-      return { usuarioDestino: new Types.ObjectId(usuarioIdentifier) };
-    } else {
-      // si la notificación ya tiene usuarioKeycloakId relleno, usamos ese campo
-      // Si no lo tiene, intentamos resolver el usuario por keycloakId y usar su _id
-      // Primero intentamos match directo por usuarioKeycloakId para ser efficientes:
-      return { usuarioKeycloakId: usuarioIdentifier };
-    }
-  }
-
+  /**
+   * Resuelve un possible identificador (ObjectId o external id) a ObjectId de usuario.
+   * - Busca por auth0Id, keycloakId o email si el identificador no parece ObjectId.
+   * - Devuelve ObjectId o null.
+   */
   async _resolveUsuarioObjectId(usuarioIdentifier) {
     if (!usuarioIdentifier) return null;
-    if (Types.ObjectId.isValid(usuarioIdentifier)) {
+    if (this._isObjectId(usuarioIdentifier)) {
       return new Types.ObjectId(usuarioIdentifier);
     }
-    const usuario = await UsuarioModel.findOne({ keycloakId: usuarioIdentifier }).select("_id").lean().exec();
+    const usuario = await UsuarioModel.findOne({
+      $or: [{ auth0Id: usuarioIdentifier }, { keycloakId: usuarioIdentifier }, { email: usuarioIdentifier }],
+    })
+      .select("_id")
+      .lean()
+      .exec();
     if (!usuario) return null;
-    return Types.ObjectId.isValid(usuario._id) ? new Types.ObjectId(usuario._id) : usuario._id;
+    return this._isObjectId(usuario._id) ? new Types.ObjectId(usuario._id) : usuario._id;
+  }
+
+  /**
+   * Construye un filtro para buscar notificaciones de un usuario dado.
+   * Soporta:
+   * - usuarioIdentifier = ObjectId string => buscar por usuarioDestino (ObjectId)
+   * - usuarioIdentifier = external id (auth0|...) => buscar por usuarioKeycloakId OR por usuarioDestino resuelto
+   */
+  async _buildUsuarioFilter(usuarioIdentifier) {
+    if (!usuarioIdentifier) return null;
+
+    // Si parece ObjectId, devolver filtro por usuarioDestino
+    if (this._isObjectId(usuarioIdentifier)) {
+      return { usuarioDestino: new Types.ObjectId(usuarioIdentifier) };
+    }
+
+    // Si no es ObjectId, intentamos resolver a usuario DB id
+    const resolved = await this._resolveUsuarioObjectId(usuarioIdentifier);
+
+    // Si resolvimos a DB id, buscamos ambos: usuarioDestino (ObjectId) o usuarioKeycloakId (string)
+    if (resolved) {
+      return {
+        $or: [{ usuarioDestino: resolved }, { usuarioKeycloakId: usuarioIdentifier }],
+      };
+    }
+
+    // Si no resolvimos, al menos filtramos por usuarioKeycloakId (documentos creados sin resolver tendrán ese campo)
+    return { usuarioKeycloakId: usuarioIdentifier };
   }
 
   async findAll() {
-    return await this.model.find();
+    return await this.model.find().lean().exec();
   }
 
   async findById(id) {
     return await this.model.findOne({ _id: id }).populate("usuarioDestino").lean().exec();
   }
 
-   async findNoLeidas(usuarioIdentifier) {
+  async findNoLeidas(usuarioIdentifier) {
     const filtro = await this._buildUsuarioFilter(usuarioIdentifier);
     if (!filtro) return [];
     return this.model
@@ -73,45 +98,86 @@ export class NotificacionRepository {
       .exec();
   }
 
-
-async create(data) {
-    // Clonar para no mutar el objeto original accidentalmente
+  /**
+   * create(payload)
+   * - Si recibe usuarioKeycloakId intenta resolver a usuarioDestino (ObjectId).
+   * - Si no encuentra usuario, NO lanza excepción: guarda usuarioKeycloakId para trazabilidad
+   *   y deja usuarioDestino = null, para no romper el flujo que origina la notificación.
+   */
+  async create(data) {
     const payload = { ...data };
 
-    // Si data trae usuarioKeycloakId y no usuarioDestino -> intentar resolver a usuarioDestino
-    if (payload.usuarioKeycloakId && !payload.usuarioDestino) {
-      const usuario = await UsuarioModel.findOne({ keycloakId: payload.usuarioKeycloakId }).select("_id").lean().exec();
-      if (usuario && usuario._id) {
-        payload.usuarioDestino = usuario._id;
-      } else {
-        const msg = `No se encontró usuario para keycloakId=${payload.usuarioKeycloakId}`;
-        console.warn("[NotificacionRepository.create] " + msg, { payload });
-        const err = new Error(msg);
-        err.code = "USER_NOT_FOUND_FOR_KEYCLOAKID";
-        throw err;
+    let usuarioDestinoId = null;
+
+    if (payload.usuarioDestino && typeof payload.usuarioDestino === "string" && this._isObjectId(payload.usuarioDestino)) {
+      // si viene usuarioDestino ya como string ObjectId, convertir a ObjectId
+      usuarioDestinoId = new Types.ObjectId(payload.usuarioDestino);
+      payload.usuarioDestino = usuarioDestinoId;
+    } else if (payload.usuarioKeycloakId) {
+      // Si nos pasan usuarioKeycloakId, puede ser ObjectId o external id
+      try {
+        if (this._isObjectId(payload.usuarioKeycloakId)) {
+          // buscar por _id directamente
+          const usuarioById = await UsuarioModel.findById(payload.usuarioKeycloakId).select("_id auth0Id keycloakId email").lean().exec();
+          if (usuarioById && usuarioById._id) {
+            usuarioDestinoId = new Types.ObjectId(usuarioById._id);
+            payload.usuarioDestino = usuarioDestinoId;
+            // conservar usuarioKeycloakId para trazabilidad
+            payload.usuarioKeycloakId = payload.usuarioKeycloakId;
+          } else {
+            // no encontramos por _id: intentar resolver como external id
+            const usuarioByExternal = await UsuarioModel.findOne({
+              $or: [{ auth0Id: payload.usuarioKeycloakId }, { keycloakId: payload.usuarioKeycloakId }, { email: payload.usuarioKeycloakId }],
+            })
+              .select("_id auth0Id keycloakId email")
+              .lean()
+              .exec();
+            if (usuarioByExternal && usuarioByExternal._id) {
+              usuarioDestinoId = new Types.ObjectId(usuarioByExternal._id);
+              payload.usuarioDestino = usuarioDestinoId;
+              payload.usuarioKeycloakId = payload.usuarioKeycloakId;
+            } else {
+              // no hay usuario; loguear y dejar usuarioDestino null
+              console.warn(`[NotificacionRepository.create] No se encontró usuario para usuarioKeycloakId=${payload.usuarioKeycloakId}`, { payload });
+              payload.usuarioDestino = null;
+            }
+          }
+        } else {
+          // usuarioKeycloakId no es ObjectId: resolver por external id
+          const usuarioByExternal = await UsuarioModel.findOne({
+            $or: [{ auth0Id: payload.usuarioKeycloakId }, { keycloakId: payload.usuarioKeycloakId }, { email: payload.usuarioKeycloakId }],
+          })
+            .select("_id auth0Id keycloakId email")
+            .lean()
+            .exec();
+          if (usuarioByExternal && usuarioByExternal._id) {
+            usuarioDestinoId = new Types.ObjectId(usuarioByExternal._id);
+            payload.usuarioDestino = usuarioDestinoId;
+            payload.usuarioKeycloakId = payload.usuarioKeycloakId;
+          } else {
+            console.warn(`[NotificacionRepository.create] No se encontró usuario para usuarioKeycloakId=${payload.usuarioKeycloakId}`, { payload });
+            payload.usuarioDestino = null;
+          }
+        }
+      } catch (err) {
+        console.error("[NotificacionRepository.create] Error resolviendo usuarioKeycloakId:", err, { payload });
+        payload.usuarioDestino = null;
       }
     }
 
-    // Si vino usuarioDestino como string y es ObjectId válido, convertir
-    if (payload.usuarioDestino && typeof payload.usuarioDestino === "string" && this._isObjectId(payload.usuarioDestino)) {
-      payload.usuarioDestino = new Types.ObjectId(payload.usuarioDestino);
-    }
-
-    // Si vino pedido como string que representa ObjectId, convertir a ObjectId
+    // Normalizaciones adicionales
     if (payload.pedido && typeof payload.pedido === "string" && this._isObjectId(payload.pedido)) {
       payload.pedido = new Types.ObjectId(payload.pedido);
     }
 
-    // Si fechaAlta viene como string, convertir a Date
     if (payload.fechaAlta && typeof payload.fechaAlta === "string") {
       const d = new Date(payload.fechaAlta);
       if (!Number.isNaN(d.getTime())) payload.fechaAlta = d;
       else delete payload.fechaAlta;
     }
 
-    // Validación mínima local: mensaje requerido
     if (!payload.mensaje && !payload.title) {
-      payload.mensaje = payload.title || `Notificación para pedido ${String(payload.pedido || "").slice(0,8)}`;
+      payload.mensaje = payload.title || `Notificación para pedido ${String(payload.pedido || "").slice(0, 8)}`;
     }
 
     const notif = new this.model(payload);
@@ -119,28 +185,22 @@ async create(data) {
       const saved = await notif.save();
       return saved.toObject ? saved.toObject() : saved;
     } catch (err) {
-      // Log detallado para entender validaciones (MongoServerError con validator JSON Schema).
       console.error("[NotificacionRepository.create] Error al guardar notificación:", {
         message: err.message,
         name: err.name,
         code: err.code,
         errInfo: err.errInfo,
-        // intentar extraer reglas insatisfechas si existen
-        schemaRulesNotSatisfied: err?.errInfo?.details?.schemaRulesNotSatisfied,
-        // Mongoose ValidationError may have .errors
         validationErrors: err.errors ? Object.keys(err.errors).map(k => ({ field: k, message: err.errors[k].message })) : undefined,
-        payload
+        payload,
       });
       throw err;
     }
   }
 
-
- async marcarTodasLeidas(usuarioIdentifier) {
-  
+  async marcarTodasLeidas(usuarioIdentifier) {
     const filtro = this._isObjectId(usuarioIdentifier)
       ? { usuarioDestino: new Types.ObjectId(usuarioIdentifier) }
-      : { usuarioKeycloakId: usuarioIdentifier };
+      : { $or: [{ usuarioKeycloakId: usuarioIdentifier }, { usuarioDestino: await this._resolveUsuarioObjectId(usuarioIdentifier) }] };
 
     const filter = { ...filtro, leida: { $ne: true } };
     const update = { $set: { leida: true, fechaLeida: new Date() } };
@@ -151,6 +211,4 @@ async create(data) {
       modifiedCount: result.modifiedCount ?? result.nModified ?? 0,
     };
   }
-
-
 }
